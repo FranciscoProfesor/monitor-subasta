@@ -2,8 +2,10 @@
 """
 Monitor de Subastas BOE - Portal subastas.boe.es
 Detecta cambios en "Puja más alta" y notifica por Telegram y/o Email
+Compatible con Railway (lee credenciales desde variables de entorno)
 """
 
+import os
 import time
 import smtplib
 import requests
@@ -14,52 +16,51 @@ from email.mime.multipart import MIMEMultipart
 from bs4 import BeautifulSoup
 
 # ============================================================
-# CONFIGURACIÓN — Rellena aquí tus datos
+# CONFIGURACIÓN — Lee desde variables de entorno (Railway)
+# o desde los valores hardcodeados como fallback local
 # ============================================================
 
-# -- URL de la subasta (puedes cambiarla o añadir más lotes) --
-URL_SUBASTA = "https://subastas.boe.es/reg/detalleSubasta.php?idSub=SUB-JA-2026-259491&ver=5&idLote=1"
-LOTE_NOMBRE = "Lote 1 - SUB-JA-2026-259491"
-
-# -- Intervalo de comprobación en segundos --
+URL_SUBASTA      = "https://subastas.boe.es/reg/detalleSubasta.php?idSub=SUB-JA-2026-259491&ver=5&idLote=1"
+LOTE_NOMBRE      = "Lote 1 - SUB-JA-2026-259491"
 INTERVALO_SEGUNDOS = 60
 
-# -- Telegram (deja en "" si no quieres usar Telegram) --
-TELEGRAM_TOKEN = "8730961965:AAEOiZjFBOF4Sk97w3C16ZrY8OVpZD1ZVY0"       # Ejemplo: "7123456789:AAH..."
-TELEGRAM_CHAT_ID = "543673812"     # Ejemplo: "123456789"
+# Telegram — Railway: añade variables TELEGRAM_TOKEN y TELEGRAM_CHAT_ID
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# -- Email Gmail (deja en "" si no quieres usar email) --
-EMAIL_REMITENTE = ""      # tu_correo@gmail.com
-EMAIL_PASSWORD_APP = ""   # Contraseña de aplicación Google (16 caracteres)
-EMAIL_DESTINATARIO = ""   # Puede ser el mismo u otro correo
+# Email Gmail — Railway: añade EMAIL_REMITENTE, EMAIL_PASSWORD_APP, EMAIL_DESTINATARIO
+EMAIL_REMITENTE      = os.environ.get("EMAIL_REMITENTE",      "")
+EMAIL_PASSWORD_APP   = os.environ.get("EMAIL_PASSWORD_APP",   "")
+EMAIL_DESTINATARIO   = os.environ.get("EMAIL_DESTINATARIO",   "")
 
-# -- Cookies de sesión del navegador (necesarias si la web pide login) --
-# Ver instrucciones más abajo para obtenerlas desde Chrome/Firefox
-SESSION_COOKIES = {
-    "SESSID": "f1fd0ce2d095b053d990b3a8dcfcb8",
-    "SimpleSAML": "07b565ab4c82afabe208c48bbbcd0a",
-}
+# Cookies BOE — Railway: añade variables SESSID y SIMPLESAM
+_sessid     = os.environ.get("SESSID",      "")
+_simplesam  = os.environ.get("SimpleSAML",  "")
+SESSION_COOKIES = {}
+if _sessid:
+    SESSION_COOKIES["SESSID"] = _sessid
+if _simplesam:
+    SESSION_COOKIES["SimpleSAML"] = _simplesam
 
 # ============================================================
-# CONFIGURACIÓN DE LOGS
+# LOGS
 # ============================================================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
-        logging.StreamHandler(),                          # consola
-        logging.FileHandler("monitor_subasta.log", encoding="utf-8"),  # fichero
+        logging.StreamHandler(),
+        logging.FileHandler("monitor_subasta.log", encoding="utf-8"),
     ],
 )
 log = logging.getLogger(__name__)
 
 # ============================================================
-# FUNCIONES DE NOTIFICACIÓN
+# NOTIFICACIONES
 # ============================================================
 
 def enviar_telegram(mensaje: str) -> bool:
-    """Envía mensaje por Telegram usando Bot API."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -77,19 +78,17 @@ def enviar_telegram(mensaje: str) -> bool:
 
 
 def enviar_email(asunto: str, cuerpo: str) -> bool:
-    """Envía email por Gmail usando contraseña de aplicación."""
     if not EMAIL_REMITENTE or not EMAIL_PASSWORD_APP or not EMAIL_DESTINATARIO:
         return False
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = asunto
-        msg["From"] = EMAIL_REMITENTE
-        msg["To"] = EMAIL_DESTINATARIO
+        msg["From"]    = EMAIL_REMITENTE
+        msg["To"]      = EMAIL_DESTINATARIO
         msg.attach(MIMEText(cuerpo, "plain", "utf-8"))
-
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as servidor:
-            servidor.login(EMAIL_REMITENTE, EMAIL_PASSWORD_APP)
-            servidor.sendmail(EMAIL_REMITENTE, EMAIL_DESTINATARIO, msg.as_string())
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as srv:
+            srv.login(EMAIL_REMITENTE, EMAIL_PASSWORD_APP)
+            srv.sendmail(EMAIL_REMITENTE, EMAIL_DESTINATARIO, msg.as_string())
         log.info("✅ Notificación email enviada")
         return True
     except Exception as e:
@@ -98,12 +97,11 @@ def enviar_email(asunto: str, cuerpo: str) -> bool:
 
 
 def notificar(asunto: str, cuerpo: str):
-    """Envía notificación por todos los canales configurados."""
     enviar_telegram(cuerpo)
     enviar_email(asunto, cuerpo)
 
 # ============================================================
-# FUNCIÓN PRINCIPAL: EXTRAE PUJA MÁS ALTA
+# EXTRACCIÓN DEL VALOR
 # ============================================================
 
 HEADERS = {
@@ -118,10 +116,6 @@ HEADERS = {
 
 
 def obtener_puja_mas_alta() -> str | None:
-    """
-    Descarga la página y extrae el valor del campo 'Puja más alta'.
-    Devuelve el texto encontrado o None si hay error.
-    """
     try:
         resp = requests.get(
             URL_SUBASTA,
@@ -136,29 +130,22 @@ def obtener_puja_mas_alta() -> str | None:
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Busca el encabezado <h4> que contiene "Puja más alta" (con o sin tilde)
     for h4 in soup.find_all("h4"):
-        if "puja" in h4.get_text(strip=True).lower() and "alta" in h4.get_text(strip=True).lower():
-            # El valor está en el siguiente nodo de texto o etiqueta hermana
+        texto_h4 = h4.get_text(strip=True).lower()
+        if "puja" in texto_h4 and "alta" in texto_h4:
             siguiente = h4.find_next_sibling()
             if siguiente:
                 valor = siguiente.get_text(strip=True)
             else:
-                # Puede ser texto directo después del h4
                 valor = h4.find_next(string=True)
-                if valor:
-                    valor = valor.strip()
-                else:
-                    valor = "(valor no encontrado)"
+                valor = valor.strip() if valor else "(valor no encontrado)"
             return valor if valor else "(vacío)"
 
-    # Fallback: busca el texto "Sin pujas" cerca del h4
     for h4 in soup.find_all("h4"):
         if "puja" in h4.get_text(strip=True).lower():
             parent = h4.parent
-            texto = parent.get_text(separator=" ", strip=True)
-            # Recorta sólo la parte relevante
-            idx = texto.lower().find("puja más alta")
+            texto  = parent.get_text(separator=" ", strip=True)
+            idx    = texto.lower().find("puja más alta")
             if idx != -1:
                 return texto[idx + len("puja más alta"):].strip()[:120]
 
@@ -171,17 +158,12 @@ def obtener_puja_mas_alta() -> str | None:
 
 def main():
     log.info("=" * 60)
-    log.info(f"🏁 Iniciando monitor de subasta: {LOTE_NOMBRE}")
-    log.info(f"🔄 Comprobación cada {INTERVALO_SEGUNDOS} segundos")
-    log.info(f"🔗 URL: {URL_SUBASTA}")
+    log.info(f"🏁 Iniciando monitor: {LOTE_NOMBRE}")
+    log.info(f"🔄 Intervalo: {INTERVALO_SEGUNDOS}s")
+    log.info(f"📡 Telegram configurado: {'✅' if TELEGRAM_TOKEN else '❌ (no configurado)'}")
+    log.info(f"📧 Email configurado:    {'✅' if EMAIL_REMITENTE else '❌ (no configurado)'}")
+    log.info(f"🍪 Cookies BOE:          {'✅' if SESSION_COOKIES else '⚠️  (sin cookies)'}")
     log.info("=" * 60)
-
-    # Comprobación de configuración
-    if not TELEGRAM_TOKEN and not EMAIL_REMITENTE:
-        log.warning(
-            "⚠️  AVISO: No hay Telegram ni Email configurados. "
-            "Las alertas sólo aparecerán en consola/log."
-        )
 
     ultimo_valor = None
     primer_check = True
@@ -198,17 +180,14 @@ def main():
             primer_check = False
         elif valor_actual != ultimo_valor:
             mensaje = (
-                f"🔔 <b>Nueva puja detectada en {LOTE_NOMBRE}</b>\n\n"
-                f"💶 <b>Puja más alta anterior:</b> {ultimo_valor}\n"
-                f"💶 <b>Puja más alta actual:</b>   {valor_actual}\n\n"
-                f"🕒 Hora: {ahora}\n"
+                f"🔔 <b>Nueva puja en {LOTE_NOMBRE}</b>\n\n"
+                f"💶 <b>Anterior:</b> {ultimo_valor}\n"
+                f"💶 <b>Nueva:</b>    {valor_actual}\n\n"
+                f"🕒 {ahora}\n"
                 f"🔗 {URL_SUBASTA}"
             )
-            log.info(f"[{ahora}] 🔔 CAMBIO DETECTADO: «{ultimo_valor}» → «{valor_actual}»")
-            notificar(
-                asunto=f"[BOE Subasta] Nueva puja: {valor_actual}",
-                cuerpo=mensaje,
-            )
+            log.info(f"[{ahora}] 🔔 CAMBIO: «{ultimo_valor}» → «{valor_actual}»")
+            notificar(asunto=f"[BOE] Nueva puja: {valor_actual}", cuerpo=mensaje)
             ultimo_valor = valor_actual
         else:
             log.info(f"[{ahora}] ✔ Sin cambios — Puja más alta: «{valor_actual}»")
