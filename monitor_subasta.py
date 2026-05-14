@@ -22,7 +22,7 @@ from bs4 import BeautifulSoup
 
 URL_SUBASTA      = "https://subastas.boe.es/reg/detalleSubasta.php?idSub=SUB-JA-2026-259491&ver=5&idLote=1"
 LOTE_NOMBRE      = "Lote 1 - SUB-JA-2026-259491"
-INTERVALO_SEGUNDOS = 60
+INTERVALO_SEGUNDOS = 5
 
 # Telegram — Railway: añade variables TELEGRAM_TOKEN y TELEGRAM_CHAT_ID
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "")
